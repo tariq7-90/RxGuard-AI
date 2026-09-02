@@ -1,12 +1,6 @@
 import json
 from pathlib import Path
-
 import streamlit as st
-
-
-# ---------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------
 
 st.set_page_config(
     page_title="RxGuard AI",
@@ -20,9 +14,9 @@ with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
     EVIDENCE = json.load(f)
 
 
-# ---------------------------------------------------------
-# Helper functions
-# ---------------------------------------------------------
+# =========================
+# Age Classification
+# =========================
 
 def age_to_days(age, unit):
     if unit == "Days":
@@ -46,6 +40,15 @@ def classify_age(days):
     return "Older Adult"
 
 
+def evidence_text(key):
+    ev = EVIDENCE[key]
+    return f'{ev["source"]} — {ev["reference"]}'
+
+
+# =========================
+# Analysis Engine
+# =========================
+
 def analyze_order(
     age,
     age_unit,
@@ -59,143 +62,310 @@ def analyze_order(
     route,
     frequency,
     neonatal_ga=None,
-    neonatal_pna=None
+    neonatal_pna=None,
+    current_medication=""
 ):
-    days = age_to_days(age, age_unit)
-    category = classify_age(days)
 
-    factors = f"Age category: {category}"
+    category = classify_age(age_to_days(age, age_unit))
+
+    factors = [
+        f"Age category: {category}"
+    ]
 
     if weight:
-        factors += f"; weight: {weight:g} kg"
+        factors.append(f"Weight: {weight:g} kg")
 
     if renal is not None:
-        factors += f"; renal function: {renal:g}"
+        factors.append(f"Renal function: {renal:g} mL/min")
+
+    if allergies.strip():
+        factors.append(f"Allergies: {allergies.strip()}")
+
+    if neonatal_ga is not None:
+        factors.append(
+            f"GA at birth: {neonatal_ga:g} weeks"
+        )
+
+    if neonatal_pna is not None:
+        factors.append(
+            f"PNA: {neonatal_pna:g} days"
+        )
 
     drug_l = drug.strip().lower()
-    indication_l = indication.strip().lower()
-    frequency_l = frequency.strip().lower()
+    freq_l = frequency.strip().lower()
 
-    # --------------------------------------------------
-    # Methotrexate frequency rule
-    # --------------------------------------------------
+    # ==================================================
+    # 1. Methotrexate Daily Instead of Weekly
+    # ==================================================
 
     if (
         drug_l in {"methotrexate", "mtx"}
-        and ("daily" in frequency_l or "qd" in frequency_l)
+        and (
+            "daily" in freq_l
+            or freq_l in {"qd", "od"}
+        )
     ):
-        ev = EVIDENCE["methotrexate_weekly"]
 
         return {
             "level": "red",
             "title": "Potential Prescribing Error",
-            "detected": (
-                "Methotrexate is ordered with a daily frequency."
-            ),
-            "reason": (
-                "For the demonstrated non-oncologic indications, "
-                "the referenced labeling uses once-weekly administration. "
-                "Daily-vs-weekly frequency errors are a known serious "
-                "medication-safety risk."
-            ),
-            "factors": factors,
-            "action": (
-                "Verify the indication and contact the prescriber. "
-                "Consider correction to the appropriate weekly regimen "
-                "only after clinical confirmation."
-            ),
-            "evidence": (
-                f'{ev["source"]} — {ev["reference"]}'
-            )
+
+            "detected":
+                "Methotrexate is ordered with a daily frequency.",
+
+            "where":
+                f"Frequency field: {frequency}. "
+                "The concern is the administration frequency, "
+                "not the 10 mg dose itself.",
+
+            "correct":
+                "For the demonstrated non-oncologic indication, "
+                "verify whether the intended regimen is "
+                "10 mg PO once weekly.",
+
+            "action":
+                "Pharmacist should verify the indication and "
+                "contact the prescriber before any change. "
+                "Do not autonomously modify the order.",
+
+            "factors":
+                "; ".join(factors),
+
+            "evidence":
+                evidence_text("methotrexate_weekly")
         }
 
-    # --------------------------------------------------
-    # Gabapentin renal rule
-    # --------------------------------------------------
+    # ==================================================
+    # 2. Gabapentin Renal Dosing
+    # ==================================================
 
     if (
         drug_l in {"gabapentin", "neurontin"}
         and renal is not None
         and 15 < renal < 30
-        and dose * 3 > 700
-        and "tid" in frequency_l
+        and "tid" in freq_l
     ):
-        ev = EVIDENCE["gabapentin_renal"]
 
-        return {
-            "level": "red",
-            "title": "Potential Prescribing Error",
-            "detected": (
-                "The entered gabapentin daily dose appears above "
-                "the labeled renal-adjusted range for CrCl >15–29 mL/min."
-            ),
-            "reason": (
-                "Gabapentin is renally cleared and the cited labeling "
-                "provides a substantially lower total daily dose range "
-                "for this renal function."
-            ),
-            "factors": (
-                f"{factors}; ordered daily dose: "
-                f"{dose * 3:g} {unit}/day (assuming TID)."
-            ),
-            "action": (
-                "Verify the indication, renal function, and regimen; "
-                "select an appropriate renal-adjusted regimen."
-            ),
-            "evidence": (
-                f'{ev["source"]} — {ev["reference"]}'
-            )
-        }
+        daily = dose * 3
 
-    # --------------------------------------------------
-    # Neonatal ampicillin verification
-    # --------------------------------------------------
+        if daily > 700:
+
+            return {
+                "level": "red",
+                "title": "Potential Prescribing Error",
+
+                "detected":
+                    f"Gabapentin total daily dose is "
+                    f"{daily:g} mg/day with CrCl "
+                    f"{renal:g} mL/min.",
+
+                "where":
+                    f"Dose + frequency fields: "
+                    f"{dose:g} {unit} {frequency} "
+                    f"= {daily:g} {unit}/day.",
+
+                "correct":
+                    "Use a renal-adjusted regimen appropriate "
+                    "for CrCl >15–29 mL/min. The cited labeling "
+                    "lists 200–700 mg/day with once-daily "
+                    "regimens. The exact regimen must be "
+                    "clinically verified.",
+
+                "action":
+                    "Pharmacist should verify indication, "
+                    "current renal function, and patient response, "
+                    "then recommend an appropriate renal-adjusted "
+                    "regimen to the prescriber.",
+
+                "factors":
+                    "; ".join(factors),
+
+                "evidence":
+                    evidence_text("gabapentin_renal")
+            }
+
+    # ==================================================
+    # 3. Neonatal Ampicillin
+    # ==================================================
 
     if (
         drug_l == "ampicillin"
         and category == "Neonate"
-        and "q8" in frequency_l
+        and "q8" in freq_l
     ):
-        ev = EVIDENCE["ampicillin_neonate"]
-
-        neonatal_info = ""
 
         if (
             neonatal_ga is not None
             and neonatal_pna is not None
+            and weight
         ):
-            neonatal_info = (
-                f"; GA at birth: {neonatal_ga:g} weeks; "
-                f"PNA: {neonatal_pna:g} days"
+
+            if (
+                neonatal_ga <= 34
+                and neonatal_pna <= 7
+            ):
+
+                daily_mg = 100 * weight
+                per_dose = daily_mg / 2
+
+                correct = (
+                    f"For the demonstrated meningitis/septicemia "
+                    f"label scenario: {daily_mg:g} mg/day divided "
+                    f"q12h = {per_dose:g} mg IV q12h. "
+                    "Confirm indication and local neonatal "
+                    "protocol before changing."
+                )
+
+            else:
+
+                correct = (
+                    "Do not infer a correction from age alone. "
+                    "Verify gestational age, postnatal age, "
+                    "indication, weight, and the applicable "
+                    "neonatal protocol."
+                )
+
+        else:
+
+            correct = (
+                "Verify gestational age, postnatal age, "
+                "indication, weight, and the applicable "
+                "neonatal protocol before determining "
+                "the correct regimen."
             )
 
         return {
-            "level": "orange",
-            "title": "Patient-Specific Verification Required",
-            "detected": (
-                "Neonatal ampicillin dosing requires assessment "
-                "of gestational age and postnatal age."
-            ),
-            "reason": (
-                "Neonatal ampicillin dosing can depend on gestational "
-                "age and postnatal age; weight alone is insufficient."
-            ),
-            "factors": (
-                factors + neonatal_info
-            ),
-            "action": (
-                "Verify gestational age, postnatal age, indication, "
-                "and the applicable institutional neonatal protocol "
-                "before changing the order."
-            ),
-            "evidence": (
-                f'{ev["source"]} — {ev["reference"]}'
-            )
+            "level": "red",
+            "title": "Potential Prescribing Error",
+
+            "detected":
+                "Neonatal ampicillin is ordered q8h and "
+                "requires patient-specific neonatal "
+                "dosing assessment.",
+
+            "where":
+                f"Frequency field: {frequency}. "
+                "Neonatal dose selection depends on "
+                "gestational age and postnatal age.",
+
+            "correct":
+                correct,
+
+            "action":
+                "Pharmacist should verify the neonatal dosing "
+                "parameters and applicable indication/protocol, "
+                "then contact the prescriber if correction is needed.",
+
+            "factors":
+                "; ".join(factors),
+
+            "evidence":
+                evidence_text("ampicillin_neonate")
+                + " "
+                + evidence_text("neonatal_pharmacology")
         }
 
-    # --------------------------------------------------
-    # High-alert medication
-    # --------------------------------------------------
+    # ==================================================
+    # 4. Insulin Glargine BID
+    # ==================================================
+
+    if (
+        drug_l in {"insulin glargine", "lantus"}
+        and (
+            "bid" in freq_l
+            or "twice" in freq_l
+        )
+    ):
+
+        return {
+            "level": "red",
+            "title": "Potential Prescribing Error",
+
+            "detected":
+                "Insulin glargine is ordered twice daily "
+                "in this demonstration.",
+
+            "where":
+                f"Frequency field: {frequency}. "
+                "The concern is the frequency, "
+                "not necessarily the 20-unit dose.",
+
+            "correct":
+                "Verify whether the intended regimen is "
+                "insulin glargine once daily, consistent "
+                "with the referenced labeling, with dose "
+                "individualized to the patient.",
+
+            "action":
+                "Because insulin is high-alert, pharmacist "
+                "verification is required. Contact the "
+                "prescriber before any change.",
+
+            "factors":
+                "; ".join(factors),
+
+            "evidence":
+                "DailyMed / Insulin Glargine (Lantus) "
+                "Prescribing Information — administered "
+                "subcutaneously once daily; dose is individualized. "
+                "ISMP lists insulin as a high-alert medication."
+        }
+
+    # ==================================================
+    # 5. Methotrexate + TMP/SMX Interaction
+    # ==================================================
+
+    if (
+        drug_l in {
+            "trimethoprim/sulfamethoxazole",
+            "trimethoprim-sulfamethoxazole",
+            "tmp/smx",
+            "co-trimoxazole",
+            "cotrimoxazole"
+        }
+        and "methotrexate"
+        in current_medication.lower()
+    ):
+
+        return {
+            "level": "red",
+            "title":
+                "Clinically Significant Drug Interaction — "
+                "Pharmacist Review",
+
+            "detected":
+                "Trimethoprim/sulfamethoxazole is ordered "
+                "while methotrexate is listed as a "
+                "current medication.",
+
+            "where":
+                "Medication list / interaction check: "
+                "TMP/SMX + methotrexate.",
+
+            "correct":
+                "Do not automatically substitute or discontinue "
+                "therapy. Verify the indication and prescriber "
+                "intent; consider an alternative or modified "
+                "plan when clinically appropriate.",
+
+            "action":
+                "Pharmacist should assess the interaction, "
+                "renal function, indication, and alternatives, "
+                "then discuss with the prescriber.",
+
+            "factors":
+                "; ".join(factors),
+
+            "evidence":
+                "DailyMed / Trimethoprim-Sulfamethoxazole "
+                "Prescribing Information — avoid concurrent "
+                "use with methotrexate due to increased free "
+                "methotrexate concentrations."
+        }
+
+    # ==================================================
+    # 6. High Alert Medication
+    # ==================================================
 
     if drug_l in {
         "heparin",
@@ -203,58 +373,74 @@ def analyze_order(
         "insulin",
         "insulin glargine"
     }:
-        ev = EVIDENCE["high_alert"]
 
         return {
             "level": "yellow",
-            "title": "High-Alert / Enhanced Verification",
-            "detected": (
-                "The medication is categorized as high-alert "
-                "in the referenced medication-safety source."
-            ),
-            "reason": (
-                "High-alert status means that an error can cause "
-                "significant harm; it does not by itself mean that "
-                "this order is incorrect."
-            ),
-            "factors": factors,
-            "action": (
-                "Perform enhanced pharmacist verification of indication, "
-                "dose, route, frequency, and monitoring requirements."
-            ),
-            "evidence": (
-                f'{ev["source"]} — {ev["reference"]}'
-            )
+            "title":
+                "High-Alert / Enhanced Verification",
+
+            "detected":
+                "The medication is classified as high-alert "
+                "in the referenced medication-safety source.",
+
+            "where":
+                "Medication selection: high-alert medication identified.",
+
+            "correct":
+                "No automatic correction is suggested. "
+                "The order may be appropriate; it requires "
+                "enhanced verification.",
+
+            "action":
+                "Pharmacist should verify indication, dose, "
+                "route, frequency, monitoring, and patient-specific "
+                "factors. High-alert status alone does not mean "
+                "the order is wrong.",
+
+            "factors":
+                "; ".join(factors),
+
+            "evidence":
+                evidence_text("high_alert")
         }
 
-    # --------------------------------------------------
-    # No anomaly
-    # --------------------------------------------------
+    # ==================================================
+    # 7. No Configured Anomaly
+    # ==================================================
 
     return {
         "level": "green",
-        "title": "No Significant Anomaly Detected",
-        "detected": (
-            "No demonstration rule was triggered by the supplied information."
-        ),
-        "reason": (
-            "This result means only that the current prototype did not "
-            "identify a configured anomaly. It is not a guarantee of "
-            "safety or appropriateness."
-        ),
-        "factors": factors,
-        "action": (
-            "Continue standard clinical pharmacist verification."
-        ),
-        "evidence": (
-            "Configured RxGuard AI evidence registry."
-        )
+        "title":
+            "No Significant Anomaly Detected",
+
+        "detected":
+            "No configured demonstration rule was triggered "
+            "by the supplied information.",
+
+        "where":
+            "No specific anomaly identified by the "
+            "current prototype rules.",
+
+        "correct":
+            "No automatic correction suggested.",
+
+        "action":
+            "Continue standard clinical pharmacist verification. "
+            "This result is not a guarantee that the order is "
+            "safe or appropriate.",
+
+        "factors":
+            "; ".join(factors),
+
+        "evidence":
+            "Configured RxGuard AI evidence registry / "
+            "applicable clinical references."
     }
 
 
-# ---------------------------------------------------------
+# =========================
 # Styling
-# ---------------------------------------------------------
+# =========================
 
 st.markdown(
     """
@@ -277,37 +463,51 @@ st.markdown(
         color: #475467;
     }
 
-    .alert-red {
-        padding: 18px;
-        border-left: 7px solid #d92d20;
-        background: #fff1f0;
-        border-radius: 8px;
+    .result {
+        padding: 22px;
+        border-radius: 10px;
+        border-left: 8px solid;
+        margin-bottom: 12px;
+        color: #101828 !important;
+        background: #ffffff;
     }
 
-    .alert-orange {
-        padding: 18px;
-        border-left: 7px solid #f79009;
-        background: #fff7e6;
-        border-radius: 8px;
+    .result * {
+        color: #101828 !important;
     }
 
-    .alert-yellow {
-        padding: 18px;
-        border-left: 7px solid #fdb022;
-        background: #fffbe6;
-        border-radius: 8px;
+    .result h3 {
+        margin-top: 0;
+        color: #101828 !important;
     }
 
-    .alert-green {
-        padding: 18px;
-        border-left: 7px solid #12b76a;
-        background: #ecfdf3;
-        border-radius: 8px;
+    .result p {
+        color: #344054 !important;
+        line-height: 1.6;
     }
 
-    .small-note {
-        color: #667085;
-        font-size: 13px;
+    .result b {
+        color: #101828 !important;
+    }
+
+    .red {
+        border-left-color: #d92d20;
+        background: #fff5f4;
+    }
+
+    .orange {
+        border-left-color: #f79009;
+        background: #fff8eb;
+    }
+
+    .yellow {
+        border-left-color: #fdb022;
+        background: #fffdf0;
+    }
+
+    .green {
+        border-left-color: #12b76a;
+        background: #f1fcf6;
     }
 
     </style>
@@ -316,9 +516,9 @@ st.markdown(
 )
 
 
-# ---------------------------------------------------------
+# =========================
 # Header
-# ---------------------------------------------------------
+# =========================
 
 st.markdown(
     '<div class="main-title">🛡️ RxGuard AI</div>',
@@ -342,15 +542,15 @@ st.markdown(
 st.divider()
 
 
-# ---------------------------------------------------------
+# =========================
 # Patient Information
-# ---------------------------------------------------------
+# =========================
 
 st.header("Patient Information")
 
-col1, col2, col3 = st.columns(3)
+c1, c2, c3 = st.columns(3)
 
-with col1:
+with c1:
 
     age = st.number_input(
         "Age",
@@ -361,15 +561,11 @@ with col1:
 
     age_unit = st.selectbox(
         "Age Unit",
-        [
-            "Years",
-            "Months",
-            "Days"
-        ]
+        ["Years", "Months", "Days"]
     )
 
 
-with col2:
+with c2:
 
     weight = st.number_input(
         "Weight (kg)",
@@ -386,7 +582,7 @@ with col2:
     )
 
 
-with col3:
+with c3:
 
     allergies = st.text_input(
         "Allergies"
@@ -398,15 +594,8 @@ with col3:
     )
 
 
-# ---------------------------------------------------------
-# Automatic age category
-# ---------------------------------------------------------
-
 category = classify_age(
-    age_to_days(
-        age,
-        age_unit
-    )
+    age_to_days(age, age_unit)
 )
 
 st.info(
@@ -414,18 +603,16 @@ st.info(
 )
 
 
-# ---------------------------------------------------------
-# Neonatal fields
-# ---------------------------------------------------------
+# =========================
+# Neonatal Factors
+# =========================
 
 neonatal_ga = None
 neonatal_pna = None
 
 if category == "Neonate":
 
-    st.subheader(
-        "Neonatal Factors"
-    )
+    st.subheader("Neonatal Factors")
 
     n1, n2 = st.columns(2)
 
@@ -452,13 +639,11 @@ if category == "Neonate":
 st.divider()
 
 
-# ---------------------------------------------------------
+# =========================
 # Medication Order
-# ---------------------------------------------------------
+# =========================
 
-st.header(
-    "Medication Order"
-)
+st.header("Medication Order")
 
 m1, m2 = st.columns(2)
 
@@ -494,13 +679,18 @@ with m2:
         placeholder="once daily / once weekly / q8h"
     )
 
+    current_medication = st.text_input(
+        "Current Medication(s) — optional",
+        placeholder="e.g., Methotrexate 10 mg PO once weekly"
+    )
+
 
 st.divider()
 
 
-# ---------------------------------------------------------
+# =========================
 # Analyze
-# ---------------------------------------------------------
+# =========================
 
 if st.button(
     "🔎 Analyze Medication Order",
@@ -518,120 +708,118 @@ if st.button(
 
 
     result = analyze_order(
-
-        age=age,
-
-        age_unit=age_unit,
-
-        weight=weight,
-
-        renal=(
-            renal
-            if renal > 0
-            else None
-        ),
-
-        allergies=allergies,
-
-        indication=indication,
-
-        drug=drug,
-
-        dose=dose,
-
-        unit=unit,
-
-        route=route,
-
-        frequency=frequency,
-
-        neonatal_ga=neonatal_ga,
-
-        neonatal_pna=neonatal_pna
+        age,
+        age_unit,
+        weight,
+        renal if renal > 0 else None,
+        allergies,
+        indication,
+        drug,
+        dose,
+        unit,
+        route,
+        frequency,
+        neonatal_ga,
+        neonatal_pna,
+        current_medication
     )
 
 
-    level_class = (
-        f"alert-{result['level']}"
-    )
-
+    # =========================
+    # Analysis Result
+    # =========================
 
     st.subheader(
         "Analysis Result"
     )
 
-
     st.markdown(
-
         f"""
-        <div class="{level_class}">
+        <div class="result {result['level']}">
 
-        <h3>
-        {result["title"]}
-        </h3>
+            <h3>
+                {result['title']}
+            </h3>
 
-        <p>
-        <b>What was detected?</b><br>
-        {result["detected"]}
-        </p>
+            <p>
+                <b>What was detected?</b><br>
+                {result['detected']}
+            </p>
 
-        <p>
-        <b>Why flagged?</b><br>
-        {result["reason"]}
-        </p>
+            <p>
+                <b>Where is the issue?</b><br>
+                {result['where']}
+            </p>
 
-        <p>
-        <b>Patient factors</b><br>
-        {result["factors"]}
-        </p>
+            <p>
+                <b>What would be appropriate?</b><br>
+                {result['correct']}
+            </p>
 
-        <p>
-        <b>Recommended action</b><br>
-        {result["action"]}
-        </p>
+            <p>
+                <b>Patient factors considered</b><br>
+                {result['factors']}
+            </p>
 
-        <p>
-        <b>Evidence</b><br>
-        {result["evidence"]}
-        </p>
+            <p>
+                <b>Required pharmacist action</b><br>
+                {result['action']}
+            </p>
+
+            <p>
+                <b>Evidence / Source</b><br>
+                {result['evidence']}
+            </p>
 
         </div>
         """,
-
         unsafe_allow_html=True
     )
 
 
-    st.warning(
-        "Pharmacist verification required. "
-        "RxGuard AI does not autonomously modify medication orders."
+    # =========================
+    # Pharmacist Verification
+    # =========================
+
+    st.markdown(
+        "### Pharmacist Verification"
     )
 
+    st.caption(
+        "The pharmacist reviews the alert, verifies the evidence "
+        "and clinical context, and communicates with the prescriber "
+        "when needed."
+    )
 
-# ---------------------------------------------------------
-# Footer
-# ---------------------------------------------------------
+    a1, a2 = st.columns(2)
 
-st.divider()
+    with a1:
 
-st.subheader(
-    "Safety Disclaimer"
-)
+        if st.button(
+            "✅ Confirm Order",
+            use_container_width=True
+        ):
 
-st.markdown(
-    """
-    **Research and demonstration prototype only.**
+            st.success(
+                "Order reviewed and confirmed by pharmacist "
+                "(demonstration only)."
+            )
 
-    This application is not connected to BestCare, hospital EHR systems,
-    patient records, UpToDate, Micromedex, or other clinical databases.
 
-    It must not be used for real prescribing, dispensing, or medication
-    administration decisions.
+    with a2:
 
-    All demonstration data are fictional.
-    """
-)
+        if st.button(
+            "✏️ Recommend Correction",
+            use_container_width=True
+        ):
 
-st.caption(
-    "RxGuard AI — Medication Order → Patient Context → Evidence → Pharmacist Verification"
-)
+            st.info(
+                "Pharmacist should document the recommended "
+                "correction and reason, then communicate with "
+                "the prescriber. RxGuard AI does not modify "
+                "the EHR order automatically."
+            )
+
+
+    st.warning(
+        "Pharmacist verification required. Rx

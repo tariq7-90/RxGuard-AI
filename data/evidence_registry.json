@@ -1,0 +1,51 @@
+{
+  "MTX_FREQUENCY": {
+    "source": "UpToDate",
+    "title": "Low-dose methotrexate dosing",
+    "summary": "For rheumatoid arthritis and similar inflammatory diseases, low-dose methotrexate is generally administered once weekly, not once daily.",
+    "verification": "Verify the indication, prescribed dose, route, and frequency against the current licensed clinical reference and hospital protocol.",
+    "last_reviewed": "2026-09"
+  },
+  "MTX_DOSE_ANOMALY": {
+    "source": "UpToDate",
+    "title": "Methotrexate — patient-specific dosing",
+    "summary": "Methotrexate dosing is indication-specific and requires verification of the indication, dose, frequency, route, renal function, and other patient factors.",
+    "verification": "Check the current licensed clinical reference and hospital-approved protocol before accepting an unusual methotrexate order.",
+    "last_reviewed": "2026-09"
+  },
+  "GLARGINE_FREQUENCY": {
+    "source": "UpToDate",
+    "title": "Insulin glargine — basal insulin administration",
+    "summary": "Insulin glargine is a long-acting basal insulin generally administered once daily. An order for multiple daily administrations should be verified.",
+    "verification": "Confirm the insulin product, prescribed frequency, indication, and patient-specific factors using the current licensed reference and hospital protocol.",
+    "last_reviewed": "2026-09"
+  },
+  "HEPARIN_NUMERIC_ANOMALY": {
+    "source": "ISMP",
+    "title": "Medication order numeric-entry safety",
+    "summary": "Unusual numerical dose entries may represent a prescribing or order-entry error and should be independently verified, particularly for high-alert medications.",
+    "verification": "Verify the intended dose with the prescriber and compare against the applicable hospital protocol and current clinical reference.",
+    "last_reviewed": "2026-09"
+  },
+  "DOSE_FORMAT": {
+    "source": "ISMP",
+    "title": "Error-prone dose expressions",
+    "summary": "Dose expressions involving unsafe decimal formatting, missing leading zeros, or unnecessary trailing zeros can contribute to medication errors.",
+    "verification": "Review the dose expression and correct unsafe formatting according to institutional medication-safety standards.",
+    "last_reviewed": "2026-09"
+  },
+  "ROUTE_MISMATCH": {
+    "source": "Clinical verification",
+    "title": "Route and dosage-form consistency",
+    "summary": "The prescribed route should be consistent with the medication, dosage form, indication, and available formulation.",
+    "verification": "Verify the intended route against the current licensed drug reference and hospital-approved formulary or protocol.",
+    "last_reviewed": "2026-09"
+  },
+  "FREQUENCY_MISMATCH": {
+    "source": "Clinical verification",
+    "title": "Frequency and indication consistency",
+    "summary": "Medication frequency should be appropriate for the drug, indication, formulation, and patient-specific factors.",
+    "verification": "Verify the frequency using the current licensed clinical reference and applicable hospital protocol.",
+    "last_reviewed": "2026-09"
+  }
+}

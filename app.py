@@ -1,88 +1,36 @@
 import json
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template_string, request
+import streamlit as st
 
-app = Flask(__name__)
+
+# ---------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------
+
+st.set_page_config(
+    page_title="RxGuard AI",
+    page_icon="🛡️",
+    layout="wide"
+)
 
 REGISTRY_PATH = Path(__file__).parent / "data" / "evidence_registry.json"
 
 with open(REGISTRY_PATH, "r", encoding="utf-8") as f:
     EVIDENCE = json.load(f)
 
-HTML = """
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>RxGuard AI</title>
-<style>
-body{font-family:Arial,sans-serif;max-width:1000px;margin:30px auto;padding:0 18px;background:#f6f7f9;color:#17202a}
-.card{background:white;border-radius:14px;padding:20px;margin:14px 0;box-shadow:0 2px 10px #00000012}
-h1{margin-bottom:4px}.muted{color:#667085}.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}
-label{font-weight:600;font-size:14px}input,select{width:100%;box-sizing:border-box;padding:10px;margin-top:5px;border:1px solid #d0d5dd;border-radius:8px}
-button{padding:11px 16px;border:0;border-radius:8px;cursor:pointer;font-weight:700}
-.primary{background:#17202a;color:white}.result{border-left:6px solid;padding:15px}.red{border-color:#d92d20}.orange{border-color:#f79009}.yellow{border-color:#fdb022}.green{border-color:#12b76a}
-@media(max-width:700px){.grid{grid-template-columns:1fr}}
-</style>
-</head>
-<body>
-<div class="card">
-<h1>RxGuard AI</h1>
-<div class="muted">Evidence-Based Medication Order Verification</div>
-<p>Detect potential prescribing errors before they reach the patient.</p>
-</div>
 
-<form class="card" method="post">
-<h2>Patient Information</h2>
-<div class="grid">
-<div><label>Age</label><input name="age" type="number" min="0" step="0.01" required></div>
-<div><label>Age Unit</label><select name="age_unit"><option value="days">Days</option><option value="months">Months</option><option value="years" selected>Years</option></select></div>
-<div><label>Weight (kg)</label><input name="weight" type="number" min="0" step="0.01"></div>
-<div><label>Renal Function (CrCl / eGFR as applicable)</label><input name="renal" type="number" min="0" step="0.01"></div>
-<div><label>Allergies</label><input name="allergies"></div>
-<div><label>Clinical Indication</label><input name="indication" placeholder="e.g., rheumatoid arthritis"></div>
-</div>
+# ---------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------
 
-<h2>Medication Order</h2>
-<div class="grid">
-<div><label>Drug</label><input name="drug" placeholder="e.g., methotrexate" required></div>
-<div><label>Dose</label><input name="dose" type="number" min="0" step="0.01" required></div>
-<div><label>Unit</label><input name="unit" placeholder="mg / units / mg/kg"></div>
-<div><label>Route</label><input name="route" placeholder="PO / IV / SC"></div>
-<div><label>Frequency</label><input name="frequency" placeholder="once daily / once weekly / q8h"></div>
-</div>
-<br>
-<button class="primary" type="submit">Analyze Medication Order</button>
-</form>
-
-{% if result %}
-<div class="card result {{result.color}}">
-<h2>{{result.title}}</h2>
-<p><b>What was detected?</b> {{result.detected}}</p>
-<p><b>Why flagged?</b> {{result.reason}}</p>
-<p><b>Patient factors:</b> {{result.factors}}</p>
-<p><b>Recommended action:</b> {{result.action}}</p>
-<p><b>Evidence:</b> {{result.evidence}}</p>
-<p class="muted"><b>Pharmacist verification required.</b> This prototype does not modify the original medication order.</p>
-</div>
-{% endif %}
-
-<div class="card">
-<h3>Safety Disclaimer</h3>
-<p class="muted">Research and demonstration prototype only. Not connected to BestCare, hospital EHR systems, patient records, UpToDate, Micromedex, or other clinical databases. Do not use for real prescribing, dispensing, or medication administration decisions.</p>
-</div>
-</body>
-</html>
-"""
-
-def age_days(age, unit):
-    if unit == "days":
+def age_to_days(age, unit):
+    if unit == "Days":
         return age
-    if unit == "months":
+    if unit == "Months":
         return age * 30.4375
     return age * 365.25
+
 
 def classify_age(days):
     if days < 28:
@@ -97,71 +45,593 @@ def classify_age(days):
         return "Adult"
     return "Older Adult"
 
-def analyze(form):
-    drug = form.get("drug","").strip().lower()
-    indication = form.get("indication","").strip().lower()
-    freq = form.get("frequency","").strip().lower()
-    dose = float(form.get("dose") or 0)
-    unit = form.get("unit","").strip().lower()
-    weight = float(form.get("weight") or 0)
-    renal = float(form.get("renal") or 0)
-    age = float(form.get("age") or 0)
-    age_unit = form.get("age_unit","years")
-    category = classify_age(age_days(age, age_unit))
 
-    factors = f"Age category: {category}; weight: {weight:g} kg"
-    if renal:
-        factors += f"; renal function value: {renal:g}"
+def analyze_order(
+    age,
+    age_unit,
+    weight,
+    renal,
+    allergies,
+    indication,
+    drug,
+    dose,
+    unit,
+    route,
+    frequency,
+    neonatal_ga=None,
+    neonatal_pna=None
+):
+    days = age_to_days(age, age_unit)
+    category = classify_age(days)
 
-    # Transparent demo rules grounded in the evidence registry.
-    if drug in {"methotrexate", "mtx"} and ("daily" in freq or "qd" in freq):
+    factors = f"Age category: {category}"
+
+    if weight:
+        factors += f"; weight: {weight:g} kg"
+
+    if renal is not None:
+        factors += f"; renal function: {renal:g}"
+
+    drug_l = drug.strip().lower()
+    indication_l = indication.strip().lower()
+    frequency_l = frequency.strip().lower()
+
+    # --------------------------------------------------
+    # Methotrexate frequency rule
+    # --------------------------------------------------
+
+    if (
+        drug_l in {"methotrexate", "mtx"}
+        and ("daily" in frequency_l or "qd" in frequency_l)
+    ):
         ev = EVIDENCE["methotrexate_weekly"]
-        return dict(color="red", title="Potential Prescribing Error",
-                    detected="Methotrexate is ordered with a daily frequency.",
-                    reason="For the demonstrated non-oncologic indications, the referenced labeling uses once-weekly administration. Daily-vs-weekly frequency errors are a known serious medication-safety risk.",
-                    factors=factors, action="Verify the indication and contact the prescriber; consider correction to the appropriate weekly regimen if clinically confirmed.",
-                    evidence=f'{ev["source"]} — {ev["reference"]}')
 
-    if drug in {"gabapentin", "neurontin"} and renal and 15 < renal < 30 and dose * 3 > 700:
+        return {
+            "level": "red",
+            "title": "Potential Prescribing Error",
+            "detected": (
+                "Methotrexate is ordered with a daily frequency."
+            ),
+            "reason": (
+                "For the demonstrated non-oncologic indications, "
+                "the referenced labeling uses once-weekly administration. "
+                "Daily-vs-weekly frequency errors are a known serious "
+                "medication-safety risk."
+            ),
+            "factors": factors,
+            "action": (
+                "Verify the indication and contact the prescriber. "
+                "Consider correction to the appropriate weekly regimen "
+                "only after clinical confirmation."
+            ),
+            "evidence": (
+                f'{ev["source"]} — {ev["reference"]}'
+            )
+        }
+
+    # --------------------------------------------------
+    # Gabapentin renal rule
+    # --------------------------------------------------
+
+    if (
+        drug_l in {"gabapentin", "neurontin"}
+        and renal is not None
+        and 15 < renal < 30
+        and dose * 3 > 700
+        and "tid" in frequency_l
+    ):
         ev = EVIDENCE["gabapentin_renal"]
-        return dict(color="red", title="Potential Prescribing Error",
-                    detected="The entered daily gabapentin dose appears above the labeled renal-adjusted range for CrCl >15–29 mL/min.",
-                    reason="Gabapentin is renally cleared and the cited labeling provides a substantially lower total daily dose range for this renal function.",
-                    factors=f"{factors}; ordered daily dose: {dose*3:g} {unit}/day (assuming TID).",
-                    action="Verify the indication, renal function, and regimen; select an appropriate renal-adjusted regimen.",
-                    evidence=f'{ev["source"]} — {ev["reference"]}')
 
-    if drug == "ampicillin" and category == "Neonate" and weight > 0 and "q8" in freq and "mening" in indication:
+        return {
+            "level": "red",
+            "title": "Potential Prescribing Error",
+            "detected": (
+                "The entered gabapentin daily dose appears above "
+                "the labeled renal-adjusted range for CrCl >15–29 mL/min."
+            ),
+            "reason": (
+                "Gabapentin is renally cleared and the cited labeling "
+                "provides a substantially lower total daily dose range "
+                "for this renal function."
+            ),
+            "factors": (
+                f"{factors}; ordered daily dose: "
+                f"{dose * 3:g} {unit}/day (assuming TID)."
+            ),
+            "action": (
+                "Verify the indication, renal function, and regimen; "
+                "select an appropriate renal-adjusted regimen."
+            ),
+            "evidence": (
+                f'{ev["source"]} — {ev["reference"]}'
+            )
+        }
+
+    # --------------------------------------------------
+    # Neonatal ampicillin verification
+    # --------------------------------------------------
+
+    if (
+        drug_l == "ampicillin"
+        and category == "Neonate"
+        and "q8" in frequency_l
+    ):
         ev = EVIDENCE["ampicillin_neonate"]
-        return dict(color="red", title="Potential Prescribing Error",
-                    detected="The neonatal ampicillin frequency may not match the cited gestational-age/postnatal-age dosing framework.",
-                    reason="Neonatal ampicillin dosing can depend on gestational age and postnatal age; weight alone is insufficient.",
-                    factors=f"{factors}. Neonatal gestational age and postnatal age are required for definitive rule evaluation.",
-                    action="Verify gestational age, postnatal age, indication, and local neonatal protocol before changing the order.",
-                    evidence=f'{ev["source"]} — {ev["reference"]}')
 
-    if drug in {"heparin", "unfractionated heparin", "insulin", "insulin glargine"}:
+        neonatal_info = ""
+
+        if (
+            neonatal_ga is not None
+            and neonatal_pna is not None
+        ):
+            neonatal_info = (
+                f"; GA at birth: {neonatal_ga:g} weeks; "
+                f"PNA: {neonatal_pna:g} days"
+            )
+
+        return {
+            "level": "orange",
+            "title": "Patient-Specific Verification Required",
+            "detected": (
+                "Neonatal ampicillin dosing requires assessment "
+                "of gestational age and postnatal age."
+            ),
+            "reason": (
+                "Neonatal ampicillin dosing can depend on gestational "
+                "age and postnatal age; weight alone is insufficient."
+            ),
+            "factors": (
+                factors + neonatal_info
+            ),
+            "action": (
+                "Verify gestational age, postnatal age, indication, "
+                "and the applicable institutional neonatal protocol "
+                "before changing the order."
+            ),
+            "evidence": (
+                f'{ev["source"]} — {ev["reference"]}'
+            )
+        }
+
+    # --------------------------------------------------
+    # High-alert medication
+    # --------------------------------------------------
+
+    if drug_l in {
+        "heparin",
+        "unfractionated heparin",
+        "insulin",
+        "insulin glargine"
+    }:
         ev = EVIDENCE["high_alert"]
-        return dict(color="yellow", title="High-Alert / Enhanced Verification",
-                    detected="The medication is categorized as high-alert in the referenced medication-safety source.",
-                    reason="High-alert status means that an error can cause significant harm; it does not by itself mean this order is incorrect.",
-                    factors=factors, action="Perform enhanced pharmacist verification of indication, dose, route, frequency, and monitoring requirements.",
-                    evidence=f'{ev["source"]} — {ev["reference"]}')
 
-    return dict(color="green", title="No Significant Anomaly Detected",
-                detected="No demonstration rule was triggered by the supplied information.",
-                reason="This result means only that the current prototype did not identify a configured anomaly; it is not a guarantee of safety or appropriateness.",
-                factors=factors, action="Continue standard clinical pharmacist verification.",
-                evidence="Configured RxGuard AI evidence registry.")
+        return {
+            "level": "yellow",
+            "title": "High-Alert / Enhanced Verification",
+            "detected": (
+                "The medication is categorized as high-alert "
+                "in the referenced medication-safety source."
+            ),
+            "reason": (
+                "High-alert status means that an error can cause "
+                "significant harm; it does not by itself mean that "
+                "this order is incorrect."
+            ),
+            "factors": factors,
+            "action": (
+                "Perform enhanced pharmacist verification of indication, "
+                "dose, route, frequency, and monitoring requirements."
+            ),
+            "evidence": (
+                f'{ev["source"]} — {ev["reference"]}'
+            )
+        }
 
-@app.route("/", methods=["GET","POST"])
-def home():
-    result = analyze(request.form) if request.method == "POST" else None
-    return render_template_string(HTML, result=result)
+    # --------------------------------------------------
+    # No anomaly
+    # --------------------------------------------------
 
-@app.route("/api/evidence")
-def evidence():
-    return jsonify(EVIDENCE)
+    return {
+        "level": "green",
+        "title": "No Significant Anomaly Detected",
+        "detected": (
+            "No demonstration rule was triggered by the supplied information."
+        ),
+        "reason": (
+            "This result means only that the current prototype did not "
+            "identify a configured anomaly. It is not a guarantee of "
+            "safety or appropriateness."
+        ),
+        "factors": factors,
+        "action": (
+            "Continue standard clinical pharmacist verification."
+        ),
+        "evidence": (
+            "Configured RxGuard AI evidence registry."
+        )
+    }
 
-if __name__ == "__main__":
-    app.run(debug=True)
+
+# ---------------------------------------------------------
+# Styling
+# ---------------------------------------------------------
+
+st.markdown(
+    """
+    <style>
+
+    .main-title {
+        font-size: 42px;
+        font-weight: 800;
+        margin-bottom: 0;
+    }
+
+    .subtitle {
+        font-size: 20px;
+        color: #667085;
+        margin-bottom: 8px;
+    }
+
+    .tagline {
+        font-size: 16px;
+        color: #475467;
+    }
+
+    .alert-red {
+        padding: 18px;
+        border-left: 7px solid #d92d20;
+        background: #fff1f0;
+        border-radius: 8px;
+    }
+
+    .alert-orange {
+        padding: 18px;
+        border-left: 7px solid #f79009;
+        background: #fff7e6;
+        border-radius: 8px;
+    }
+
+    .alert-yellow {
+        padding: 18px;
+        border-left: 7px solid #fdb022;
+        background: #fffbe6;
+        border-radius: 8px;
+    }
+
+    .alert-green {
+        padding: 18px;
+        border-left: 7px solid #12b76a;
+        background: #ecfdf3;
+        border-radius: 8px;
+    }
+
+    .small-note {
+        color: #667085;
+        font-size: 13px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+
+# ---------------------------------------------------------
+# Header
+# ---------------------------------------------------------
+
+st.markdown(
+    '<div class="main-title">🛡️ RxGuard AI</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">'
+    'Evidence-Based Medication Order Verification'
+    '</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="tagline">'
+    'Detect potential prescribing errors before they reach the patient.'
+    '</div>',
+    unsafe_allow_html=True
+)
+
+st.divider()
+
+
+# ---------------------------------------------------------
+# Patient Information
+# ---------------------------------------------------------
+
+st.header("Patient Information")
+
+col1, col2, col3 = st.columns(3)
+
+with col1:
+
+    age = st.number_input(
+        "Age",
+        min_value=0.0,
+        value=45.0,
+        step=1.0
+    )
+
+    age_unit = st.selectbox(
+        "Age Unit",
+        [
+            "Years",
+            "Months",
+            "Days"
+        ]
+    )
+
+
+with col2:
+
+    weight = st.number_input(
+        "Weight (kg)",
+        min_value=0.0,
+        value=70.0,
+        step=0.1
+    )
+
+    renal = st.number_input(
+        "Renal Function (CrCl / eGFR as applicable)",
+        min_value=0.0,
+        value=0.0,
+        step=1.0
+    )
+
+
+with col3:
+
+    allergies = st.text_input(
+        "Allergies"
+    )
+
+    indication = st.text_input(
+        "Clinical Indication",
+        placeholder="e.g., rheumatoid arthritis"
+    )
+
+
+# ---------------------------------------------------------
+# Automatic age category
+# ---------------------------------------------------------
+
+category = classify_age(
+    age_to_days(
+        age,
+        age_unit
+    )
+)
+
+st.info(
+    f"**Auto Age Category:** {category}"
+)
+
+
+# ---------------------------------------------------------
+# Neonatal fields
+# ---------------------------------------------------------
+
+neonatal_ga = None
+neonatal_pna = None
+
+if category == "Neonate":
+
+    st.subheader(
+        "Neonatal Factors"
+    )
+
+    n1, n2 = st.columns(2)
+
+    with n1:
+
+        neonatal_ga = st.number_input(
+            "Gestational Age at Birth (weeks)",
+            min_value=20.0,
+            max_value=45.0,
+            value=37.0,
+            step=1.0
+        )
+
+    with n2:
+
+        neonatal_pna = st.number_input(
+            "Postnatal Age (days)",
+            min_value=0.0,
+            value=max(0.0, age),
+            step=1.0
+        )
+
+
+st.divider()
+
+
+# ---------------------------------------------------------
+# Medication Order
+# ---------------------------------------------------------
+
+st.header(
+    "Medication Order"
+)
+
+m1, m2 = st.columns(2)
+
+with m1:
+
+    drug = st.text_input(
+        "Drug",
+        placeholder="e.g., methotrexate"
+    )
+
+    dose = st.number_input(
+        "Dose",
+        min_value=0.0,
+        value=10.0,
+        step=0.1
+    )
+
+    unit = st.text_input(
+        "Unit",
+        placeholder="mg / units / mg/kg"
+    )
+
+
+with m2:
+
+    route = st.text_input(
+        "Route",
+        placeholder="PO / IV / SC"
+    )
+
+    frequency = st.text_input(
+        "Frequency",
+        placeholder="once daily / once weekly / q8h"
+    )
+
+
+st.divider()
+
+
+# ---------------------------------------------------------
+# Analyze
+# ---------------------------------------------------------
+
+if st.button(
+    "🔎 Analyze Medication Order",
+    type="primary",
+    use_container_width=True
+):
+
+    if not drug.strip():
+
+        st.error(
+            "Please enter a medication."
+        )
+
+        st.stop()
+
+
+    result = analyze_order(
+
+        age=age,
+
+        age_unit=age_unit,
+
+        weight=weight,
+
+        renal=(
+            renal
+            if renal > 0
+            else None
+        ),
+
+        allergies=allergies,
+
+        indication=indication,
+
+        drug=drug,
+
+        dose=dose,
+
+        unit=unit,
+
+        route=route,
+
+        frequency=frequency,
+
+        neonatal_ga=neonatal_ga,
+
+        neonatal_pna=neonatal_pna
+    )
+
+
+    level_class = (
+        f"alert-{result['level']}"
+    )
+
+
+    st.subheader(
+        "Analysis Result"
+    )
+
+
+    st.markdown(
+
+        f"""
+        <div class="{level_class}">
+
+        <h3>
+        {result["title"]}
+        </h3>
+
+        <p>
+        <b>What was detected?</b><br>
+        {result["detected"]}
+        </p>
+
+        <p>
+        <b>Why flagged?</b><br>
+        {result["reason"]}
+        </p>
+
+        <p>
+        <b>Patient factors</b><br>
+        {result["factors"]}
+        </p>
+
+        <p>
+        <b>Recommended action</b><br>
+        {result["action"]}
+        </p>
+
+        <p>
+        <b>Evidence</b><br>
+        {result["evidence"]}
+        </p>
+
+        </div>
+        """,
+
+        unsafe_allow_html=True
+    )
+
+
+    st.warning(
+        "Pharmacist verification required. "
+        "RxGuard AI does not autonomously modify medication orders."
+    )
+
+
+# ---------------------------------------------------------
+# Footer
+# ---------------------------------------------------------
+
+st.divider()
+
+st.subheader(
+    "Safety Disclaimer"
+)
+
+st.markdown(
+    """
+    **Research and demonstration prototype only.**
+
+    This application is not connected to BestCare, hospital EHR systems,
+    patient records, UpToDate, Micromedex, or other clinical databases.
+
+    It must not be used for real prescribing, dispensing, or medication
+    administration decisions.
+
+    All demonstration data are fictional.
+    """
+)
+
+st.caption(
+    "RxGuard AI — Medication Order → Patient Context → Evidence → Pharmacist Verification"
+)
